@@ -2,7 +2,7 @@ module IoOperations where
 
 import Data.Char
 import Data.Word
-import DES
+import ChaCha20
 import ImageTransformation
 import ToPixels
 import WordOperations

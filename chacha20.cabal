@@ -1,0 +1,18 @@
+cabal-version:      2.4
+name:               chacha20-stego
+version:            0.1.0.0
+synopsis:           ChaCha20-based steganography tool (hand-rolled ChaCha20 implementation)
+build-type:         Simple
+
+executable chacha20-stego
+    main-is:          Main.hs
+    hs-source-dirs:   src
+    other-modules:    ChaCha20
+                    , BinaryOperation
+                    , ImageTransformation
+                    , IoOperations
+                    , ToPixels
+                    , WordOperations
+    build-depends:    base >=4.7 && <5
+    default-language: Haskell2010
+    ghc-options:      -O2
