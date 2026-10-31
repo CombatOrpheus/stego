@@ -1,13 +1,13 @@
 cabal-version:      2.4
-name:               des-stego
+name:               chacha20-stego
 version:            0.1.0.0
-synopsis:           DES-based steganography tool (hand-rolled DES implementation)
+synopsis:           ChaCha20-based steganography tool (hand-rolled ChaCha20 implementation)
 build-type:         Simple
 
-executable des-stego
+executable chacha20-stego
     main-is:          Main.hs
     hs-source-dirs:   src
-    other-modules:    DES
+    other-modules:    ChaCha20
                     , BinaryOperation
                     , ImageTransformation
                     , IoOperations

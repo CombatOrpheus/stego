@@ -2,7 +2,7 @@ module Main where
 
 import System.Environment
 
-import DES
+import ChaCha20
 import Data.Char
 import ImageTransformation
 import IoOperations
