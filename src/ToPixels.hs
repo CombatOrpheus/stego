@@ -21,7 +21,7 @@ data Pixel = RGB
 
 instance Show Pixel where
   -- Each channel on its own line, matching the PPM ASCII body format.
-  show (RGB r g b) = shows r '\n' (shows g '\n' (shows b '\n' ""))
+  show (RGB r g b) = shows r ('\n' : shows g ('\n' : shows b "\n"))
 
 -- | Serialise a pixel list back into PPM body text.
 pixelListToString :: [Pixel] -> String

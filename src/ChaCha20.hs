@@ -14,7 +14,7 @@ module ChaCha20
   ) where
 
 import Data.Array.Unboxed (UArray, listArray, (!), (//))
-import Data.Bits (shiftL, shiftR, xor)
+import Data.Bits (shiftL, shiftR, xor, (.|.))
 import Data.Char (ord)
 import Data.Word (Word32, Word64)
 import WordOperations (integerToWord64)
@@ -72,13 +72,14 @@ doubleRound = diagonalRound . columnRound
 -- (eight 'Word32' words), 96-bit nonce (three 'Word32' words) and 32-bit
 -- block counter, exactly as specified in RFC 8439.
 chacha20Block :: [Word32] -> [Word32] -> Word32 -> [Word32]
-chacha20Block keyWords nonceWords counter = zipWith (+) final initialList
+chacha20Block keyWords nonceWords counter = zipWith (+) finalList initialList
   where
     initial = sigma // (keyIndices ++ counterIndices ++ nonceIndices)
     keyIndices    = zip [4 .. 11] keyWords
     counterIndices = [(12, counter)]
     nonceIndices  = zip [13 .. 15] nonceWords
     final = iterate doubleRound initial !! 10
+    finalList = [final ! i | i <- [0 .. 15]]
     initialList = [initial ! i | i <- [0 .. 15]]
 
 -- | Turn a decimal digit string into a 256-bit key: eight 'Word32' words,

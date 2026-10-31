@@ -13,6 +13,8 @@ module IoOperations
   , decapitation
   , header
   , messageCheck
+  , embedMessage
+  , recoverMessage
   , writeImage
   , extractMessage
   ) where
@@ -91,26 +93,42 @@ header (xs:ys)
   | any (== ' ') xs = xs ++ "\n" ++ head ys ++ "\n"
   | otherwise      = xs ++ "\n" ++ header ys
 
+-- | Pure core of 'writeImage': build the stego-image contents from the raw
+-- image text, a numeric key, and the plaintext message.  Returns 'Nothing'
+-- when the image is too small for the message.
+embedMessage :: Integer -> String -> String -> Maybe String
+embedMessage key message image
+  | not (messageCheck image message) = Nothing
+  | otherwise = Just (decapitation image ++ pixelListToString newRgb)
+  where
+    encryptedMessage = encryptMessage key message
+    rgb = getPixels image
+    newRgb = hideEncryptedMessage rgb
+               (word64ToInteger encryptedMessage)
+               (messageSize encryptedMessage)
+
+-- | Pure core of 'extractMessage': recover the hidden plaintext from the raw
+-- image text using the numeric key.
+recoverMessage :: Integer -> String -> String
+recoverMessage key image = map chr decryptedMessage
+  where
+    rgb = getPixels image
+    message = word64ToInteger (extractEncryptedMessage rgb)
+    decryptedMessage = word64ToInt (decryptMessage key message)
+
 -- | Interactive workflow: embed an encrypted message into a user-chosen image.
 writeImage :: IO ()
 writeImage = do
   path <- getImagePath
   image <- getImage path
   message <- getMessage
-  if messageCheck image message
-    then do
-      initialKey <- getKey
-      let key = keyToNum initialKey
-          encryptedMessage = encryptMessage key message
-          rgb = getPixels image
-          newRgb = hideEncryptedMessage rgb
-                     (word64ToInteger encryptedMessage)
-                     (messageSize encryptedMessage)
-          imageHead = decapitation image
-          ppmRGB = pixelListToString newRgb
-      getStegnoKey (path ++ "1") (imageHead ++ ppmRGB)
-    else
-      print "Image is too small: choose a bigger image or a smaller message."
+  initialKey <- getKey
+  case embedMessage (keyToNum initialKey) message image of
+    Just stegoImage -> do
+      getStegnoKey (path ++ "1") stegoImage
+      putStrLn ("Stego image written to " ++ path ++ "1")
+    Nothing ->
+      putStrLn "Image is too small: choose a bigger image or a smaller message."
 
 -- | Interactive workflow: extract and decrypt the message hidden in an image.
 extractMessage :: IO ()
@@ -118,10 +136,6 @@ extractMessage = do
   path <- getImagePath
   image <- getImage path
   initialKey <- getKey
-  let rgb = getPixels image
-      message = word64ToInteger (extractEncryptedMessage rgb)
-      key = keyToNum initialKey
-      decryptedMessage = word64ToInt (decryptMessage key message)
-      finalMessage = map chr decryptedMessage
+  let finalMessage = recoverMessage (keyToNum initialKey) image
   writeFile (path ++ ".txt") finalMessage
   print finalMessage

@@ -8,7 +8,7 @@ module ImageTransformation
 import BinaryOperation
 import Data.Char (digitToInt)
 import Data.Word (Word64)
-import ToPixels (Pixel(..))
+import ToPixels (Pixel(..), rgbToMessageBinary)
 
 -- Width, in pixels/bits, of the length prefix written before the message.
 sizePrefixBits :: Int
@@ -24,7 +24,7 @@ hideEncryptedMessage rgbValues messageInteger sizeImage =
 -- 32-bit size prefix, then @size * 64@ further bits split into 64-bit chunks.
 extractEncryptedMessage :: [Pixel] -> [Word64]
 extractEncryptedMessage pixels =
-  [ binaryToInteger chunk | chunk <- split64Bits messageBits ]
+  [ fromIntegral (binaryToInteger chunk) | chunk <- split64Bits messageBits ]
   where
     (sizePixels, messagePixels) = splitAt sizePrefixBits pixels
     messageSize = binaryToInt (rgbToMessageBinary sizePixels)
