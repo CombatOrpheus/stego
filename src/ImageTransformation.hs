@@ -1,28 +1,39 @@
-module ImageTransformation ( hideEncryptedMessage
-                            ,extractEncryptedMessage
-                           ) where
+-- | Embedding and extraction of encrypted messages in the blue channel of a
+-- PPM image (least-significant-bit steganography).
+module ImageTransformation
+  ( hideEncryptedMessage
+  , extractEncryptedMessage
+  ) where
 
 import BinaryOperation
-import Data.Char
-import Data.Word
-import ToPixels
+import Data.Char (digitToInt)
+import Data.Word (Word64)
+import ToPixels (Pixel(..), rgbToMessageBinary)
 
--- It takes a encrypted message and the rgb values and hide the message on the rgb
+-- Width, in pixels/bits, of the length prefix written before the message.
+sizePrefixBits :: Int
+sizePrefixBits = 32
+
+-- | Hide an encrypted message (as 64-bit integer blocks) plus its size in the
+-- last bit of every blue channel.
 hideEncryptedMessage :: [Pixel] -> [Integer] -> Integer -> [Pixel]
-hideEncryptedMessage rgbValues messageInteger sizeImage = hidingMessage  rgbValues (messageToBinary messageInteger sizeImage)
+hideEncryptedMessage rgbValues messageInteger sizeImage =
+  hidingMessage rgbValues (messageToBinary messageInteger sizeImage)
 
--- It receives all the image's pixels and then returns the encrypted pmessage
+-- | Recover the encrypted 'Word64' blocks hidden in the pixel list: read the
+-- 32-bit size prefix, then @size * 64@ further bits split into 64-bit chunks.
 extractEncryptedMessage :: [Pixel] -> [Word64]
-extractEncryptedMessage pixels = [read (show $ binaryToInteger char64) :: Word64 | char64 <- split64Bits $ rgbToMessageBinary messagePixels]
-                               where messageSize = binaryToInt $ rgbToMessageBinary sizePixels
-                                     messagePixels = take (messageSize * 64) (drop 32 pixels)
-                                     sizePixels = take 32 pixels
+extractEncryptedMessage pixels =
+  [ fromIntegral (binaryToInteger chunk) | chunk <- split64Bits messageBits ]
+  where
+    (sizePixels, messagePixels) = splitAt sizePrefixBits pixels
+    messageSize = binaryToInt (rgbToMessageBinary sizePixels)
+    messageBits = rgbToMessageBinary (take (messageSize * 64) messagePixels)
 
--- Hidding the binary message on a list with rgb values
+-- | Write the message bits into the blue channels, one bit per pixel.
 hidingMessage :: [Pixel] -> BinaryString -> [Pixel]
-hidingMessage [] [] = []
-hidingMessage [] xs = error $ "The message is bigger than the values, asshole!" ++ xs
+hidingMessage [] (_:_) =
+  error "The message is bigger than the values, asshole!"
 hidingMessage rgbValues [] = rgbValues
-hidingMessage ((RGB red green blue):rgbValues) (currentBit:messageBit) = newRGB : hidingMessage rgbValues messageBit
-                                                                        where newRGB = RGB red green newBlue
-                                                                              newBlue = changeLastBit  blue (digitToInt currentBit)
+hidingMessage ((RGB red green blue):rest) (currentBit:messageBit) =
+  RGB red green (changeLastBit blue (digitToInt currentBit)) : hidingMessage rest messageBit

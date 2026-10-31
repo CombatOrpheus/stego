@@ -1,119 +1,141 @@
-module IoOperations where
+-- | Input/output glue: reading/writing PPM files, the small CLI prompts, and
+-- the two end-to-end workflows (embed a message into an image, extract it
+-- again).
+module IoOperations
+  ( getImage
+  , getStegnoKey
+  , getImagePath
+  , getKey
+  , getMessage
+  , keyToNum
+  , messageSize
+  , resolution
+  , decapitation
+  , header
+  , messageCheck
+  , embedMessage
+  , recoverMessage
+  , writeImage
+  , extractMessage
+  ) where
 
-import Data.Char
-import Data.Word
-import ChaCha20
-import ImageTransformation
-import ToPixels
-import WordOperations
+import Data.Char (chr, digitToInt)
+import Data.Word (Word64)
 
--- It reads the image
+import ChaCha20 (decryptMessage, encryptMessage)
+import ImageTransformation (extractEncryptedMessage, hideEncryptedMessage)
+import ToPixels (getPixels, pixelListToString)
+import WordOperations (word64ToInteger, word64ToInt)
+
+-- | Slurp an image file.
 getImage :: FilePath -> IO String
 getImage path
   | null path = error "The path is invalid\n"
-  | otherwise = do
-    image <- (readFile path)
-    return (image)
+  | otherwise = readFile path
 
--- It writes the final image, with the message hidde within
+-- | Write the final image, with the message hidden within.
 getStegnoKey :: FilePath -> String -> IO ()
 getStegnoKey path values
   | null path = error "The path is invalid\n"
-  | otherwise = do
-    let image = values
-    writeFile path image
-    return ()
+  | otherwise = writeFile path values
 
 getImagePath :: IO String
-getImagePath = do
-  print "Path to Image:"
-  image <- getLine
-  return (image)
+getImagePath = prompt "Path to Image:"
 
 getKey :: IO String
-getKey = do
-  print "Encryption/Decryption Key:"
-  key <- getLine
-  return (key)
-
-toNum :: [Int] -> Integer
-toNum (x:xs)
-  | null xs = toInteger x
-  | otherwise = (toInteger x * 10 ^ (length xs)) + toNum xs
-
-keyToNum :: String -> Integer
-keyToNum number = toNum (map digitToInt number)
+getKey = prompt "Encryption/Decryption Key:"
 
 getMessage :: IO String
-getMessage = do
-  print "Message to embed:"
-  message <- getLine
-  return (message)
+getMessage = prompt "Message to embed:"
 
--- It returns the number of characters in the message
+prompt :: String -> IO String
+prompt label = do
+  print label
+  getLine
+
+-- | Number of characters in the message (stored as a 32-bit size prefix).
 messageSize :: [Word64] -> Integer
-messageSize message = toInteger (length message)
+messageSize = toInteger . length
 
+-- | Parse a decimal-digit key string into an 'Integer'.
+keyToNum :: String -> Integer
+keyToNum = foldl (\acc d -> acc * 10 + toInteger d) 0 . map digitToInt
+
+-- | Total pixel count taken from the PPM dimension line (the last header line
+-- before the maxval, i.e. second-to-last line of the stripped header).
 resolution :: String -> Integer
 resolution image = horizontal * vertical
   where
-    resolutionLine = last (init (lines (decapitation image)))
-    size = words resolutionLine
-    horizontal = read (head size) :: Integer
-    vertical = read (head (tail size)) :: Integer
+    sizeWords = words (last (init (lines (decapitation image))))
+    horizontal = read (head sizeWords) :: Integer
+    vertical   = read (head (tail sizeWords)) :: Integer
 
--- It checks if it's possible to hide the message within the image
-messageToimage :: Integer -> Integer -> Bool
-messageToimage image message
-  | total > message = error "The message " False
-  | otherwise = True
+-- | Whether the image has enough pixels to carry @message@ characters
+-- (one bit per pixel: 32 size bits plus 64 bits per character).
+messageCheck :: String -> String -> Bool
+messageCheck image message = total <= imagePixels
   where
-    total = 32 + message * 64
+    total = 32 + length message * 64
+    imagePixels = fromIntegral (resolution image) :: Int
 
+-- | The original header of the image, kept verbatim for writing back.
 decapitation :: String -> String
 decapitation imageString = header (lines imageString)
 
--- It returns the original header of the image, to later write
+-- | Rebuild the header text (magic line, comments, dimensions, maxval) from
+-- the raw lines: keep every line up to and including the first one that
+-- contains a space (the @"W H"@ dimension line).
 header :: [String] -> String
+header [] = ""
 header (xs:ys)
-  | null xs = error "PPM P3 header is invalid"
-  | elem '#' xs = xs ++ "\n" ++ (header ys)
-  | elem ' ' xs = xs ++ "\n" ++ (head ys) ++ "\n"
-  | otherwise = xs ++ "\n" ++ (header ys)
+  | null xs        = error "PPM P3 header is invalid"
+  | any (== '#') xs = xs ++ "\n" ++ header ys
+  | any (== ' ') xs = xs ++ "\n" ++ head ys ++ "\n"
+  | otherwise      = xs ++ "\n" ++ header ys
 
-messageCheck :: String -> String -> Bool
-messageCheck image message | total > imageS = False
-                           | otherwise = True
+-- | Pure core of 'writeImage': build the stego-image contents from the raw
+-- image text, a numeric key, and the plaintext message.  Returns 'Nothing'
+-- when the image is too small for the message.
+embedMessage :: Integer -> String -> String -> Maybe String
+embedMessage key message image
+  | not (messageCheck image message) = Nothing
+  | otherwise = Just (decapitation image ++ pixelListToString newRgb)
   where
-    total = 32 + ((length message) * 64)
-    imageS =  read (show (resolution image)) :: Int
+    encryptedMessage = encryptMessage key message
+    rgb = getPixels image
+    newRgb = hideEncryptedMessage rgb
+               (word64ToInteger encryptedMessage)
+               (messageSize encryptedMessage)
 
+-- | Pure core of 'extractMessage': recover the hidden plaintext from the raw
+-- image text using the numeric key.
+recoverMessage :: Integer -> String -> String
+recoverMessage key image = map chr decryptedMessage
+  where
+    rgb = getPixels image
+    message = word64ToInteger (extractEncryptedMessage rgb)
+    decryptedMessage = word64ToInt (decryptMessage key message)
+
+-- | Interactive workflow: embed an encrypted message into a user-chosen image.
 writeImage :: IO ()
-writeImage = do  path <- getImagePath
-                 image <- getImage path
-                 message <- getMessage
-                 if (messageCheck image message)
-                 then(do initialKey <- getKey
-                         let rgb = getPixels image
-                             key = keyToNum initialKey
-                             encryptedMessage = encryptMessage key message
-                             imageHead = decapitation image
-                             size = messageSize encryptedMessage
-                             newRgb = hideEncryptedMessage rgb (word64ToInteger encryptedMessage) size
-                             ppmRGB = pixelListToString newRgb
-                             newPath = path ++ "1"
-                         getStegnoKey newPath (imageHead ++ ppmRGB)
-                      )
-                 else (print "Image is too small: choose a bigger image or a smaller message.")
+writeImage = do
+  path <- getImagePath
+  image <- getImage path
+  message <- getMessage
+  initialKey <- getKey
+  case embedMessage (keyToNum initialKey) message image of
+    Just stegoImage -> do
+      getStegnoKey (path ++ "1") stegoImage
+      putStrLn ("Stego image written to " ++ path ++ "1")
+    Nothing ->
+      putStrLn "Image is too small: choose a bigger image or a smaller message."
 
+-- | Interactive workflow: extract and decrypt the message hidden in an image.
 extractMessage :: IO ()
-extractMessage = do path <- getImagePath
-                    image <- getImage path
-                    initialKey <- getKey
-                    let rgb = getPixels image
-                        message = word64ToInteger (extractEncryptedMessage rgb)
-                        key = keyToNum initialKey
-                        decryptedMessage = word64ToInt (decryptMessage key message)
-                        finalMessage = map chr decryptedMessage
-                    writeFile (path ++ ".txt") finalMessage
-                    print finalMessage
+extractMessage = do
+  path <- getImagePath
+  image <- getImage path
+  initialKey <- getKey
+  let finalMessage = recoverMessage (keyToNum initialKey) image
+  writeFile (path ++ ".txt") finalMessage
+  print finalMessage
