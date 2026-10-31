@@ -13,19 +13,24 @@ module ChaCha20
   , quarterRound
   ) where
 
-import Data.Bits
-import Data.Word
+import Data.Array.Unboxed (UArray, listArray, (!), (//))
+import Data.Bits (shiftL, shiftR, xor)
+import Data.Char (ord)
+import Data.Word (Word32, Word64)
 import WordOperations (integerToWord64)
 
 -- ChaCha20 constants: the expansion of "expand 32-byte k", little-endian words.
-sigma0, sigma1, sigma2, sigma3 :: Word32
-sigma0 = 0x61707865
-sigma1 = 0x3320646e
-sigma2 = 0x79622d32
-sigma3 = 0x6b206574
+sigma :: UArray Int Word32
+sigma = listArray (0, 15) $
+  [ 0x61707865, 0x3320646e, 0x79622d32, 0x6b206574 ] ++ replicate 12 0
 
 rotl32 :: Int -> Word32 -> Word32
 rotl32 n x = (x `shiftL` n) .|. (x `shiftR` (32 - n))
+
+-- | A ChaCha20 state is sixteen 32-bit words held in an unboxed array, which
+-- gives O(1) indexed access (the previous list-based state made every round
+-- rebuild the whole state through repeated indexing and re-listing).
+type State = UArray Int Word32
 
 -- | The ChaCha quarter round (RFC 8439, section 2.1.1):
 -- a += b; d ^= a; d <<<< 16; c += d; b ^= c; b <<<< 12;
@@ -46,63 +51,56 @@ quarterRound a0 b0 c0 d0 = (a3, b3, c3, d3)
     c3 = c2 + d3
     b3 = rotl32 12 (b2 `xor` c3)
 
-type State = [Word32]
+-- | Apply one quarter round to four state positions at once.
+applyQR :: State -> Int -> Int -> Int -> Int -> State
+applyQR s i j k l =
+  s // zip [i, j, k, l] [a, b, c, d]
+  where (a, b, c, d) = quarterRound (s ! i) (s ! j) (s ! k) (s ! l)
 
 columnRound :: State -> State
-columnRound s = replaceAll [ qr 0 4 8 12, qr 1 5 9 13, qr 2 6 10 14, qr 3 7 11 15 ] s
-  where qr i j k l = (i, quarterRound (s !! i) (s !! j) (s !! k) (s !! l))
+columnRound s =
+  applyQR (applyQR (applyQR (applyQR s 0 4 8 12) 1 5 9 13) 2 6 10 14) 3 7 11 15
 
 diagonalRound :: State -> State
-diagonalRound s = replaceAll [ qr 0 5 10 15, qr 1 6 11 12, qr 2 7 8 13, qr 3 4 9 14 ] s
-  where qr i j k l = (i, quarterRound (s !! i) (s !! j) (s !! k) (s !! l))
+diagonalRound s =
+  applyQR (applyQR (applyQR (applyQR s 0 5 10 15) 1 6 11 12) 2 7 8 13) 3 4 9 14
 
-replaceAll :: [(Int, (Word32, Word32, Word32, Word32))] -> State -> State
-replaceAll [] s = s
-replaceAll edits s = [ replaceAt j sJ | (j, sJ) <- zip [0 ..] s ]
-  where
-    -- (base index, new state) pairs produced by each quarter round in parallel
-    applied = [ (i, put (i + 12) d (put (i + 8) c (put (i + 4) b (put i a s))))
-              | (i, (a, b, c, d)) <- edits ]
-    replaceAt j sJ = case filter ((== j) . fst) applied of
-                       ((_, st):_) -> st !! j
-                       []          -> sJ
-    put i v xs = [ if k == i then v else x | (k, x) <- zip [0 ..] xs ]
+doubleRound :: State -> State
+doubleRound = diagonalRound . columnRound
 
 -- | One ChaCha20 block (64 bytes) of keystream for the given 256-bit key
 -- (eight 'Word32' words), 96-bit nonce (three 'Word32' words) and 32-bit
 -- block counter, exactly as specified in RFC 8439.
 chacha20Block :: [Word32] -> [Word32] -> Word32 -> [Word32]
-chacha20Block keyWords nonceWords counter = zipWith (+) stateOut initialState
+chacha20Block keyWords nonceWords counter = zipWith (+) final initialList
   where
-    initialState =
-      [ sigma0, sigma1, sigma2, sigma3 ]
-        ++ [ keyWords !! 0, keyWords !! 1, keyWords !! 2, keyWords !! 3
-           , keyWords !! 4, keyWords !! 5, keyWords !! 6, keyWords !! 7
-           , counter
-           , nonceWords !! 0, nonceWords !! 1, nonceWords !! 2 ]
-    stateOut = foldr ($) initialState (replicate 10 (diagonalRound . columnRound))
+    initial = sigma // (keyIndices ++ counterIndices ++ nonceIndices)
+    keyIndices    = zip [4 .. 11] keyWords
+    counterIndices = [(12, counter)]
+    nonceIndices  = zip [13 .. 15] nonceWords
+    final = iterate doubleRound initial !! 10
+    initialList = [initial ! i | i <- [0 .. 15]]
 
 -- | Turn a decimal digit string into a 256-bit key: eight 'Word32' words,
 -- derived deterministically from the digits with an avalanche step.
 stringToKey :: [Char] -> [Word32]
 stringToKey digits = map mix (zip [0 ..] rawWords)
   where
-    digitValues = [ fromIntegral (ord' c) | c <- digits, isDigit' c ]
+    digitValues = [ fromIntegral (ord c - ord '0') | c <- digits, c >= '0', c <= '9' ]
     base = if null digitValues then [1] else digitValues
-    padded = take 32 (base ++ [ v * 7 + 13 + fromIntegral i | (i, v) <- zip [0 ..] (cycle base) ])
+    padded = take 32 (base ++ [ v * 7 + 13 + fromIntegral i
+                               | (i, v) <- zip [0 ..] (cycle base) ])
     rawWords = map wordFromChunk (chunk4 padded)
     mix (i, w) = w * 0x9e3779b9 + fromIntegral i * 0x85ebca6b + 0xc2b2ae35
     wordFromChunk ds = foldl (\acc d -> acc * 10 + d) 0 ds
     chunk4 [] = []
     chunk4 xs = take 4 xs : chunk4 (drop 4 xs)
-    ord' c = fromEnum c - fromEnum '0'
-    isDigit' c = c >= '0' && c <= '9'
 
 mix32 :: Word32 -> Word32 -> Word32
 mix32 a b = rotl32 17 ((a * 0x9e3779b9) `xor` (b + 0x243f6a88))
 
 deriveNonce :: [Word32] -> Int -> [Word32]
-deriveNonce ks index = [ n0, n1, n2 ]
+deriveNonce ks index = [n0, n1, n2]
   where
     seed = fromIntegral index :: Word32
     n0 = foldl mix32 seed ks
@@ -110,12 +108,14 @@ deriveNonce ks index = [ n0, n1, n2 ]
     n2 = foldl mix32 (n1 `xor` 0x1f83d9ab) ks
 
 keystreamWord :: [Word32] -> Int -> Word64 -> Word64
-keystreamWord ks index block =
-  let kw = chacha20Block ks (deriveNonce ks index) (fromIntegral index)
-      w1 = (fromIntegral (kw !! 0) :: Word64) `shiftL` 32 .|. fromIntegral (kw !! 1)
-      w2 = (fromIntegral (kw !! 2) :: Word64) `shiftL` 32 .|. fromIntegral (kw !! 3)
-  in block `xor` w1 `xor` w2
+keystreamWord ks index block = block `xor` w1 `xor` w2
+  where
+    kw = chacha20Block ks (deriveNonce ks index) (fromIntegral index)
+    w1 = (fromIntegral (kw !! 0) :: Word64) `shiftL` 32 .|. fromIntegral (kw !! 1)
+    w2 = (fromIntegral (kw !! 2) :: Word64) `shiftL` 32 .|. fromIntegral (kw !! 3)
 
+-- | XOR every block with its position-specific keystream word.  ChaCha20 is
+-- symmetric, so this single pass performs both encryption and decryption.
 cryptBlocks :: [Char] -> [Word64] -> [Word64]
 cryptBlocks key blocks = zipWith (keystreamWord ks) [0 ..] blocks
   where
